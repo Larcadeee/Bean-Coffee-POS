@@ -1,4 +1,3 @@
-
 namespace Bean.Api.Models;
 
 public class Product
@@ -13,4 +12,8 @@ public class Product
 
     public DateTimeOffset CreatedAt { get; set; }
         = DateTimeOffset.UtcNow;
+
+    public int? CategoryId { get; set; }
+
+    public Category? Category { get; set; }
 }

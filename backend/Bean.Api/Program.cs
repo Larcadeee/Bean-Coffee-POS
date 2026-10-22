@@ -229,4 +229,197 @@ app.MapDelete("/api/products/{id:int}", async (int id, BeanDbContext db) =>
 .WithTags("Products");
 
 
+// GET: /api/categories
+app.MapGet("/api/categories", async (BeanDbContext db) =>
+{
+    var categories = await db.Categories
+        .AsNoTracking()
+        .OrderBy(c => c.Name)
+        .ToListAsync();
+
+    return Results.Ok(categories);
+})
+.WithName("GetCategories")
+.WithTags("Categories");
+
+// GET: /api/categories/{id}
+app.MapGet("/api/categories/{id:int}", async (
+    int id,
+    BeanDbContext db) =>
+{
+    var category = await db.Categories
+        .AsNoTracking()
+        .FirstOrDefaultAsync(c => c.Id == id);
+
+    return category is null
+        ? Results.NotFound()
+        : Results.Ok(category);
+})
+.WithName("GetCategoryById")
+.WithTags("Categories");
+
+// POST: /api/categories
+app.MapPost("/api/categories", async (
+    CreateCategoryRequest request,
+    BeanDbContext db) =>
+{
+    var name = request.Name?.Trim();
+    var description = request.Description?.Trim();
+
+    if (string.IsNullOrWhiteSpace(name))
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Category name is required."]
+            });
+    }
+
+    if (name.Length > 80)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Category name must not exceed 80 characters."]
+            });
+    }
+
+    if (description?.Length > 300)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["description"] = ["Description must not exceed 300 characters."]
+            });
+    }
+
+    var duplicate = await db.Categories
+        .AnyAsync(c => c.Name.ToLower() == name.ToLower());
+
+    if (duplicate)
+    {
+        return Results.Conflict(new
+        {
+            message = "A category with this name already exists."
+        });
+    }
+
+    var category = new Category
+    {
+        Name = name,
+        Description = string.IsNullOrWhiteSpace(description)
+            ? null
+            : description,
+        CreatedAt = DateTimeOffset.UtcNow
+    };
+
+    db.Categories.Add(category);
+    await db.SaveChangesAsync();
+
+    return Results.Created(
+        $"/api/categories/{category.Id}",
+        category);
+})
+.WithName("CreateCategory")
+.WithTags("Categories");
+
+// PUT: /api/categories/{id}
+app.MapPut("/api/categories/{id:int}", async (
+    int id,
+    UpdateCategoryRequest request,
+    BeanDbContext db) =>
+{
+    var category = await db.Categories.FindAsync(id);
+
+    if (category is null)
+    {
+        return Results.NotFound();
+    }
+
+    var name = request.Name?.Trim();
+    var description = request.Description?.Trim();
+
+    if (string.IsNullOrWhiteSpace(name))
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Category name is required."]
+            });
+    }
+
+    if (name.Length > 80)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Category name must not exceed 80 characters."]
+            });
+    }
+
+    if (description?.Length > 300)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["description"] = ["Description must not exceed 300 characters."]
+            });
+    }
+
+    var duplicate = await db.Categories.AnyAsync(c =>
+        c.Id != id && c.Name.ToLower() == name.ToLower());
+
+    if (duplicate)
+    {
+        return Results.Conflict(new
+        {
+            message = "A category with this name already exists."
+        });
+    }
+
+    category.Name = name;
+    category.Description = string.IsNullOrWhiteSpace(description)
+        ? null
+        : description;
+
+    await db.SaveChangesAsync();
+
+    return Results.Ok(category);
+})
+.WithName("UpdateCategory")
+.WithTags("Categories");
+
+// DELETE: /api/categories/{id}
+app.MapDelete("/api/categories/{id:int}", async (
+    int id,
+    BeanDbContext db) =>
+{
+    var category = await db.Categories.FindAsync(id);
+
+    if (category is null)
+    {
+        return Results.NotFound();
+    }
+
+    var hasProducts = await db.Products
+        .AnyAsync(p => p.CategoryId == id);
+
+    if (hasProducts)
+    {
+        return Results.Conflict(new
+        {
+            message = "Cannot delete a category that still has products."
+        });
+    }
+
+    db.Categories.Remove(category);
+    await db.SaveChangesAsync();
+
+    return Results.NoContent();
+})
+.WithName("DeleteCategory")
+.WithTags("Categories");
+
+
+
 app.Run();
