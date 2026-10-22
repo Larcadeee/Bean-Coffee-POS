@@ -330,6 +330,173 @@ app.MapDelete("/api/products/{id:int}", async (
 .WithName("DeleteProduct")
 .WithTags("Products");
 
+
+ // ==============================
+ // STOCK ADJUSTMENTS
+ // ==============================
+
+ // GET stock adjustment history for a product
+ app.MapGet("/api/products/{id:int}/stock-adjustments", async (
+     int id,
+     BeanDbContext db) =>
+ {
+     var productExists = await db.Products
+         .AnyAsync(p => p.Id == id);
+
+     if (!productExists)
+     {
+         return Results.NotFound(new
+         {
+             message = "Product not found."
+         });
+     }
+
+     var adjustments = await db.StockAdjustments
+         .AsNoTracking()
+         .Where(a => a.ProductId == id)
+         .OrderByDescending(a => a.CreatedAt)
+         .Select(a => new StockAdjustmentResponse(
+             a.Id,
+             a.ProductId,
+             a.Product.Name,
+             a.QuantityChange,
+             a.StockBefore,
+             a.StockAfter,
+             a.Reason,
+             a.CreatedAt))
+         .ToListAsync();
+
+     return Results.Ok(adjustments);
+ })
+ .WithName("GetProductStockAdjustments")
+ .WithTags("Inventory");
+
+ // CREATE a stock adjustment
+ app.MapPost("/api/products/{id:int}/stock-adjustments", async (
+     int id,
+     CreateStockAdjustmentRequest request,
+     BeanDbContext db) =>
+ {
+     var reason = request.Reason?.Trim();
+
+     if (request.QuantityChange == 0)
+     {
+         return Results.ValidationProblem(
+             new Dictionary<string, string[]>
+             {
+                 ["quantityChange"] =
+                 [
+                     "Quantity change cannot be zero."
+                 ]
+             });
+     }
+
+     if (string.IsNullOrWhiteSpace(reason))
+     {
+         return Results.ValidationProblem(
+             new Dictionary<string, string[]>
+             {
+                 ["reason"] = ["An adjustment reason is required."]
+             });
+     }
+
+     if (reason.Length > 200)
+     {
+         return Results.ValidationProblem(
+             new Dictionary<string, string[]>
+             {
+                 ["reason"] =
+                 [
+                     "Reason must not exceed 200 characters."
+                 ]
+             });
+     }
+
+     await using var transaction =
+         await db.Database.BeginTransactionAsync();
+
+     var product = await db.Products
+         .FromSqlInterpolated(
+             $"SELECT * FROM \"Products\" WHERE \"Id\" = {id} FOR UPDATE")
+         .FirstOrDefaultAsync();
+
+     if (product is null)
+     {
+         await transaction.RollbackAsync();
+
+         return Results.NotFound(new
+         {
+             message = "Product not found."
+         });
+     }
+
+     var stockBefore = product.StockQuantity;
+
+     var stockAfter = (long)stockBefore + request.QuantityChange;
+
+     if (stockAfter < 0)
+     {
+         await transaction.RollbackAsync();
+
+         return Results.ValidationProblem(
+             new Dictionary<string, string[]>
+             {
+                 ["quantityChange"] =
+                 [
+                     $"Insufficient stock. Current stock is {stockBefore}."
+                 ]
+             });
+     }
+
+     if (stockAfter > int.MaxValue)
+     {
+         await transaction.RollbackAsync();
+
+         return Results.ValidationProblem(
+             new Dictionary<string, string[]>
+             {
+                 ["quantityChange"] =
+                 [
+                     "The resulting stock quantity is too large."
+                 ]
+             });
+     }
+
+     product.StockQuantity = (int)stockAfter;
+
+     var adjustment = new StockAdjustment
+     {
+         ProductId = product.Id,
+         QuantityChange = request.QuantityChange,
+         StockBefore = stockBefore,
+         StockAfter = product.StockQuantity,
+         Reason = reason,
+         CreatedAt = DateTimeOffset.UtcNow
+     };
+
+     db.StockAdjustments.Add(adjustment);
+
+     await db.SaveChangesAsync();
+     await transaction.CommitAsync();
+
+     var response = new StockAdjustmentResponse(
+         adjustment.Id,
+         product.Id,
+         product.Name,
+         adjustment.QuantityChange,
+         adjustment.StockBefore,
+         adjustment.StockAfter,
+         adjustment.Reason,
+         adjustment.CreatedAt);
+
+     return Results.Created(
+         $"/api/products/{id}/stock-adjustments/{adjustment.Id}",
+         response);
+ })
+ .WithName("CreateProductStockAdjustment")
+ .WithTags("Inventory");
+
+
 // ==============================
 // CATEGORIES
 // ==============================

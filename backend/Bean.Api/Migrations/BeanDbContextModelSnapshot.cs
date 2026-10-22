@@ -90,6 +90,42 @@ namespace Bean.Api.Migrations
                     b.ToTable("Products", (string)null);
                 });
 
+            modelBuilder.Entity("Bean.Api.Models.StockAdjustment", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<int>("ProductId")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("QuantityChange")
+                        .HasColumnType("integer");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("character varying(200)");
+
+                    b.Property<int>("StockAfter")
+                        .HasColumnType("integer");
+
+                    b.Property<int>("StockBefore")
+                        .HasColumnType("integer");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProductId", "CreatedAt")
+                        .HasDatabaseName("IX_StockAdjustments_ProductId_CreatedAt");
+
+                    b.ToTable("StockAdjustments", (string)null);
+                });
+
             modelBuilder.Entity("Bean.Api.Models.Product", b =>
                 {
                     b.HasOne("Bean.Api.Models.Category", "Category")
@@ -98,6 +134,17 @@ namespace Bean.Api.Migrations
                         .OnDelete(DeleteBehavior.Restrict);
 
                     b.Navigation("Category");
+                });
+
+            modelBuilder.Entity("Bean.Api.Models.StockAdjustment", b =>
+                {
+                    b.HasOne("Bean.Api.Models.Product", "Product")
+                        .WithMany()
+                        .HasForeignKey("ProductId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Product");
                 });
 
             modelBuilder.Entity("Bean.Api.Models.Category", b =>

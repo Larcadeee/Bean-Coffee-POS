@@ -1,3 +1,4 @@
+
 using Bean.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
@@ -14,6 +15,9 @@ public class BeanDbContext : DbContext
     public DbSet<Product> Products => Set<Product>();
 
     public DbSet<Category> Categories => Set<Category>();
+
+    public DbSet<StockAdjustment> StockAdjustments =>
+        Set<StockAdjustment>();
 
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
@@ -34,12 +38,12 @@ public class BeanDbContext : DbContext
                 .HasPrecision(10, 2)
                 .IsRequired();
 
-            entity.Property(product => product.StockQuantity)
-    .HasDefaultValue(0)
-    .IsRequired();
-
             entity.Property(product => product.IsAvailable)
                 .HasDefaultValue(true);
+
+            entity.Property(product => product.StockQuantity)
+                .HasDefaultValue(0)
+                .IsRequired();
 
             entity.Property(product => product.CreatedAt)
                 .HasColumnType("timestamp with time zone")
@@ -70,6 +74,43 @@ public class BeanDbContext : DbContext
 
             entity.HasIndex(category => category.Name)
                 .IsUnique();
+        });
+
+        modelBuilder.Entity<StockAdjustment>(entity =>
+        {
+            entity.ToTable("StockAdjustments");
+
+            entity.HasKey(adjustment => adjustment.Id);
+
+            entity.Property(adjustment => adjustment.QuantityChange)
+                .IsRequired();
+
+            entity.Property(adjustment => adjustment.StockBefore)
+                .IsRequired();
+
+            entity.Property(adjustment => adjustment.StockAfter)
+                .IsRequired();
+
+            entity.Property(adjustment => adjustment.Reason)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(adjustment => adjustment.CreatedAt)
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.HasOne(adjustment => adjustment.Product)
+                .WithMany()
+                .HasForeignKey(adjustment => adjustment.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(adjustment => new
+                {
+                    adjustment.ProductId,
+                    adjustment.CreatedAt
+                })
+                .HasDatabaseName(
+                    "IX_StockAdjustments_ProductId_CreatedAt");
         });
     }
 }
