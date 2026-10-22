@@ -34,6 +34,10 @@ public class BeanDbContext : DbContext
                 .HasPrecision(10, 2)
                 .IsRequired();
 
+            entity.Property(product => product.StockQuantity)
+    .HasDefaultValue(0)
+    .IsRequired();
+
             entity.Property(product => product.IsAvailable)
                 .HasDefaultValue(true);
 

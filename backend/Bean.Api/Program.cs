@@ -17,11 +17,6 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
-    app.UseDeveloperExceptionPage();
-}
-
 // Swagger
 if (app.Environment.IsDevelopment())
 {
@@ -29,7 +24,7 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-// Health checks
+// HEALTH CHECKS
 app.MapGet("/api/health", () =>
 {
     return Results.Ok(new { status = "Healthy" });
@@ -41,7 +36,14 @@ app.MapGet("/api/health/database", async (BeanDbContext db) =>
 {
     try
     {
-        await db.Database.CanConnectAsync();
+        var canConnect = await db.Database.CanConnectAsync();
+
+        if (!canConnect)
+        {
+            return Results.Problem(
+                title: "Database connection failed",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
 
         return Results.Ok(new
         {
@@ -59,11 +61,11 @@ app.MapGet("/api/health/database", async (BeanDbContext db) =>
 .WithName("DatabaseHealthCheck")
 .WithTags("Health");
 
-// =====================================================
+// ==============================
 // PRODUCTS
-// =====================================================
+// ==============================
 
-// GET: /api/products
+// GET all products
 app.MapGet("/api/products", async (BeanDbContext db) =>
 {
     var products = await db.Products
@@ -76,7 +78,8 @@ app.MapGet("/api/products", async (BeanDbContext db) =>
             p.IsAvailable,
             p.CreatedAt,
             p.CategoryId,
-            p.Category != null ? p.Category.Name : null))
+            p.Category != null ? p.Category.Name : null,
+            p.StockQuantity))
         .ToListAsync();
 
     return Results.Ok(products);
@@ -84,7 +87,7 @@ app.MapGet("/api/products", async (BeanDbContext db) =>
 .WithName("GetProducts")
 .WithTags("Products");
 
-// GET: /api/products/{id}
+// GET product by ID
 app.MapGet("/api/products/{id:int}", async (
     int id,
     BeanDbContext db) =>
@@ -99,7 +102,8 @@ app.MapGet("/api/products/{id:int}", async (
             p.IsAvailable,
             p.CreatedAt,
             p.CategoryId,
-            p.Category != null ? p.Category.Name : null))
+            p.Category != null ? p.Category.Name : null,
+            p.StockQuantity))
         .FirstOrDefaultAsync();
 
     return product is null
@@ -109,7 +113,7 @@ app.MapGet("/api/products/{id:int}", async (
 .WithName("GetProductById")
 .WithTags("Products");
 
-// POST: /api/products
+// CREATE product
 app.MapPost("/api/products", async (
     CreateProductRequest request,
     BeanDbContext db) =>
@@ -143,6 +147,15 @@ app.MapPost("/api/products", async (
             });
     }
 
+    if (request.StockQuantity < 0)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["stockQuantity"] = ["Stock quantity cannot be negative."]
+            });
+    }
+
     if (request.CategoryId.HasValue)
     {
         var categoryExists = await db.Categories
@@ -167,34 +180,38 @@ app.MapPost("/api/products", async (
         Price = request.Price,
         IsAvailable = request.IsAvailable,
         CategoryId = request.CategoryId,
+        StockQuantity = request.StockQuantity,
         CreatedAt = DateTimeOffset.UtcNow
     };
 
     db.Products.Add(product);
     await db.SaveChangesAsync();
 
-        var response = new ProductResponse(
-    product.Id,
-    product.Name,
-    product.Price,
-    product.IsAvailable,
-    product.CreatedAt,
-    product.CategoryId,
-    product.CategoryId.HasValue
+    var categoryName = product.CategoryId.HasValue
         ? await db.Categories
             .Where(c => c.Id == product.CategoryId.Value)
             .Select(c => c.Name)
             .FirstOrDefaultAsync()
-        : null);
+        : null;
 
-return Results.Created(
-    $"/api/products/{product.Id}",
-    response);
+    var response = new ProductResponse(
+        product.Id,
+        product.Name,
+        product.Price,
+        product.IsAvailable,
+        product.CreatedAt,
+        product.CategoryId,
+        categoryName,
+        product.StockQuantity);
+
+    return Results.Created(
+        $"/api/products/{product.Id}",
+        response);
 })
 .WithName("CreateProduct")
 .WithTags("Products");
 
-// PUT: /api/products/{id}
+// UPDATE product
 app.MapPut("/api/products/{id:int}", async (
     int id,
     UpdateProductRequest request,
@@ -236,6 +253,15 @@ app.MapPut("/api/products/{id:int}", async (
             });
     }
 
+    if (request.StockQuantity < 0)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["stockQuantity"] = ["Stock quantity cannot be negative."]
+            });
+    }
+
     if (request.CategoryId.HasValue)
     {
         var categoryExists = await db.Categories
@@ -258,29 +284,33 @@ app.MapPut("/api/products/{id:int}", async (
     product.Price = request.Price;
     product.IsAvailable = request.IsAvailable;
     product.CategoryId = request.CategoryId;
+    product.StockQuantity = request.StockQuantity;
 
     await db.SaveChangesAsync();
 
-    var response = new ProductResponse(
-    product.Id,
-    product.Name,
-    product.Price,
-    product.IsAvailable,
-    product.CreatedAt,
-    product.CategoryId,
-    product.CategoryId.HasValue
+    var categoryName = product.CategoryId.HasValue
         ? await db.Categories
             .Where(c => c.Id == product.CategoryId.Value)
             .Select(c => c.Name)
             .FirstOrDefaultAsync()
-        : null);
+        : null;
 
-return Results.Ok(response);
+    var response = new ProductResponse(
+        product.Id,
+        product.Name,
+        product.Price,
+        product.IsAvailable,
+        product.CreatedAt,
+        product.CategoryId,
+        categoryName,
+        product.StockQuantity);
+
+    return Results.Ok(response);
 })
 .WithName("UpdateProduct")
 .WithTags("Products");
 
-// DELETE: /api/products/{id}
+// DELETE product
 app.MapDelete("/api/products/{id:int}", async (
     int id,
     BeanDbContext db) =>
@@ -300,11 +330,11 @@ app.MapDelete("/api/products/{id:int}", async (
 .WithName("DeleteProduct")
 .WithTags("Products");
 
-// =====================================================
+// ==============================
 // CATEGORIES
-// =====================================================
+// ==============================
 
-// GET: /api/categories
+// GET all categories
 app.MapGet("/api/categories", async (BeanDbContext db) =>
 {
     var categories = await db.Categories
@@ -317,7 +347,7 @@ app.MapGet("/api/categories", async (BeanDbContext db) =>
 .WithName("GetCategories")
 .WithTags("Categories");
 
-// GET: /api/categories/{id}
+// GET category by ID
 app.MapGet("/api/categories/{id:int}", async (
     int id,
     BeanDbContext db) =>
@@ -333,7 +363,7 @@ app.MapGet("/api/categories/{id:int}", async (
 .WithName("GetCategoryById")
 .WithTags("Categories");
 
-// POST: /api/categories
+// CREATE category
 app.MapPost("/api/categories", async (
     CreateCategoryRequest request,
     BeanDbContext db) =>
@@ -355,10 +385,7 @@ app.MapPost("/api/categories", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["name"] =
-                [
-                    "Category name must not exceed 80 characters."
-                ]
+                ["name"] = ["Category name must not exceed 80 characters."]
             });
     }
 
@@ -404,7 +431,7 @@ app.MapPost("/api/categories", async (
 .WithName("CreateCategory")
 .WithTags("Categories");
 
-// PUT: /api/categories/{id}
+// UPDATE category
 app.MapPut("/api/categories/{id:int}", async (
     int id,
     UpdateCategoryRequest request,
@@ -434,10 +461,7 @@ app.MapPut("/api/categories/{id:int}", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["name"] =
-                [
-                    "Category name must not exceed 80 characters."
-                ]
+                ["name"] = ["Category name must not exceed 80 characters."]
             });
     }
 
@@ -477,7 +501,7 @@ app.MapPut("/api/categories/{id:int}", async (
 .WithName("UpdateCategory")
 .WithTags("Categories");
 
-// DELETE: /api/categories/{id}
+// DELETE category
 app.MapDelete("/api/categories/{id:int}", async (
     int id,
     BeanDbContext db) =>

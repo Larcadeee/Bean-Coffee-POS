@@ -1,3 +1,4 @@
+
 namespace Bean.Api.Models;
 
 public class Product
@@ -10,8 +11,10 @@ public class Product
 
     public bool IsAvailable { get; set; } = true;
 
-    public DateTimeOffset CreatedAt { get; set; }
-        = DateTimeOffset.UtcNow;
+    public int StockQuantity { get; set; } = 0;
+
+    public DateTimeOffset CreatedAt { get; set; } =
+        DateTimeOffset.UtcNow;
 
     public int? CategoryId { get; set; }
 

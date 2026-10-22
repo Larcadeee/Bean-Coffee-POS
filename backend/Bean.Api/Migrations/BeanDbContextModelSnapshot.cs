@@ -78,6 +78,11 @@ namespace Bean.Api.Migrations
                         .HasPrecision(10, 2)
                         .HasColumnType("numeric(10,2)");
 
+                    b.Property<int>("StockQuantity")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer")
+                        .HasDefaultValue(0);
+
                     b.HasKey("Id");
 
                     b.HasIndex("CategoryId");

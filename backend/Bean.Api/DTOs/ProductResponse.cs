@@ -7,4 +7,5 @@ public record ProductResponse(
     bool IsAvailable,
     DateTimeOffset CreatedAt,
     int? CategoryId,
-    string? CategoryName);
+    string? CategoryName,
+    int StockQuantity);
