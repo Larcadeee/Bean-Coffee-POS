@@ -1,0 +1,7 @@
+# .NET build output
+**/bin/
+**/obj/
+
+# Local development secrets
+**/appsettings.Development.json
+**/secrets.json
