@@ -1,96 +1,69 @@
 
-using Bean.Api.DTOs;
 using Bean.Api.Data;
+using Bean.Api.DTOs;
 using Bean.Api.Models;
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// API documentation.
+// Database configuration
+builder.Services.AddDbContext<BeanDbContext>(options =>
+    options.UseNpgsql(
+        builder.Configuration.GetConnectionString("DefaultConnection")));
+
+// Swagger configuration
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
-// PostgreSQL connection.
-var connectionString =
-    builder.Configuration.GetConnectionString("DefaultConnection");
-
-if (string.IsNullOrWhiteSpace(connectionString))
-{
-    throw new InvalidOperationException(
-        "The DefaultConnection connection string is missing.");
-}
-
-builder.Services.AddDbContext<BeanDbContext>(options =>
-    options.UseNpgsql(connectionString));
-
 var app = builder.Build();
 
+if (app.Environment.IsDevelopment())
+{
+    app.UseDeveloperExceptionPage();
+}
+
+// Swagger
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// Root endpoint.
-app.MapGet("/", () =>
-{
-    return Results.Ok(new
-    {
-        message = "Welcome to Bean Coffee POS API",
-        documentation = "/swagger",
-        health = "/api/health",
-        databaseHealth = "/api/health/database"
-    });
-});
-
-// API health check.
+// Health checks
 app.MapGet("/api/health", () =>
 {
-    return Results.Ok(new
-    {
-        status = "Healthy",
-        application = "Bean Coffee POS",
-        timestamp = DateTimeOffset.UtcNow
-    });
+    return Results.Ok(new { status = "Healthy" });
 })
-.WithName("GetHealth")
-.WithTags("System");
+.WithName("HealthCheck")
+.WithTags("Health");
 
-// Database connectivity check.
-app.MapGet(
-    "/api/health/database",
-    async (BeanDbContext db) =>
+app.MapGet("/api/health/database", async (BeanDbContext db) =>
+{
+    try
     {
-        try
+        await db.Database.CanConnectAsync();
+
+        return Results.Ok(new
         {
-            var canConnect =
-                await db.Database.CanConnectAsync();
+            status = "Healthy",
+            database = "bean_pos"
+        });
+    }
+    catch
+    {
+        return Results.Problem(
+            title: "Database connection failed",
+            statusCode: StatusCodes.Status503ServiceUnavailable);
+    }
+})
+.WithName("DatabaseHealthCheck")
+.WithTags("Health");
 
-            if (!canConnect)
-            {
-                return Results.Problem(
-                    title: "Database unavailable",
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
-            }
+// =====================================================
+// PRODUCTS
+// =====================================================
 
-            return Results.Ok(new
-            {
-                status = "Healthy",
-                database = "bean_pos"
-            });
-        }
-        catch
-        {
-            // Avoid returning connection details or credentials.
-            return Results.Problem(
-                title: "Database connection failed",
-                statusCode: StatusCodes.Status503ServiceUnavailable);
-        }
-    })
-    .WithName("GetDatabaseHealth")
-    .WithTags("System");
-
-    // GET: /api/products
+// GET: /api/products
 app.MapGet("/api/products", async (BeanDbContext db) =>
 {
     var products = await db.Products
@@ -104,9 +77,13 @@ app.MapGet("/api/products", async (BeanDbContext db) =>
 .WithTags("Products");
 
 // GET: /api/products/{id}
-app.MapGet("/api/products/{id:int}", async (int id, BeanDbContext db) =>
+app.MapGet("/api/products/{id:int}", async (
+    int id,
+    BeanDbContext db) =>
 {
-    var product = await db.Products.FindAsync(id);
+    var product = await db.Products
+        .AsNoTracking()
+        .FirstOrDefaultAsync(p => p.Id == id);
 
     return product is null
         ? Results.NotFound()
@@ -116,32 +93,55 @@ app.MapGet("/api/products/{id:int}", async (int id, BeanDbContext db) =>
 .WithTags("Products");
 
 // POST: /api/products
-app.MapPost("/api/products", async (CreateProductRequest request, BeanDbContext db) =>
+app.MapPost("/api/products", async (
+    CreateProductRequest request,
+    BeanDbContext db) =>
 {
     var name = request.Name?.Trim();
 
     if (string.IsNullOrWhiteSpace(name))
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["name"] = ["Product name is required."]
-        });
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Product name is required."]
+            });
     }
 
     if (name.Length > 120)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["name"] = ["Product name must not exceed 120 characters."]
-        });
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Product name must not exceed 120 characters."]
+            });
     }
 
     if (request.Price < 0)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["price"] = ["Price cannot be negative."]
+            });
+    }
+
+    if (request.CategoryId.HasValue)
+    {
+        var categoryExists = await db.Categories
+            .AnyAsync(c => c.Id == request.CategoryId.Value);
+
+        if (!categoryExists)
         {
-            ["price"] = ["Price cannot be negative."]
-        });
+            return Results.ValidationProblem(
+                new Dictionary<string, string[]>
+                {
+                    ["categoryId"] =
+                    [
+                        "The selected category does not exist."
+                    ]
+                });
+        }
     }
 
     var product = new Product
@@ -149,13 +149,16 @@ app.MapPost("/api/products", async (CreateProductRequest request, BeanDbContext 
         Name = name,
         Price = request.Price,
         IsAvailable = request.IsAvailable,
+        CategoryId = request.CategoryId,
         CreatedAt = DateTimeOffset.UtcNow
     };
 
     db.Products.Add(product);
     await db.SaveChangesAsync();
 
-    return Results.Created($"/api/products/{product.Id}", product);
+    return Results.Created(
+        $"/api/products/{product.Id}",
+        product);
 })
 .WithName("CreateProduct")
 .WithTags("Products");
@@ -177,31 +180,53 @@ app.MapPut("/api/products/{id:int}", async (
 
     if (string.IsNullOrWhiteSpace(name))
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["name"] = ["Product name is required."]
-        });
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Product name is required."]
+            });
     }
 
     if (name.Length > 120)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
-        {
-            ["name"] = ["Product name must not exceed 120 characters."]
-        });
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["name"] = ["Product name must not exceed 120 characters."]
+            });
     }
 
     if (request.Price < 0)
     {
-        return Results.ValidationProblem(new Dictionary<string, string[]>
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["price"] = ["Price cannot be negative."]
+            });
+    }
+
+    if (request.CategoryId.HasValue)
+    {
+        var categoryExists = await db.Categories
+            .AnyAsync(c => c.Id == request.CategoryId.Value);
+
+        if (!categoryExists)
         {
-            ["price"] = ["Price cannot be negative."]
-        });
+            return Results.ValidationProblem(
+                new Dictionary<string, string[]>
+                {
+                    ["categoryId"] =
+                    [
+                        "The selected category does not exist."
+                    ]
+                });
+        }
     }
 
     product.Name = name;
     product.Price = request.Price;
     product.IsAvailable = request.IsAvailable;
+    product.CategoryId = request.CategoryId;
 
     await db.SaveChangesAsync();
 
@@ -211,7 +236,9 @@ app.MapPut("/api/products/{id:int}", async (
 .WithTags("Products");
 
 // DELETE: /api/products/{id}
-app.MapDelete("/api/products/{id:int}", async (int id, BeanDbContext db) =>
+app.MapDelete("/api/products/{id:int}", async (
+    int id,
+    BeanDbContext db) =>
 {
     var product = await db.Products.FindAsync(id);
 
@@ -228,6 +255,9 @@ app.MapDelete("/api/products/{id:int}", async (int id, BeanDbContext db) =>
 .WithName("DeleteProduct")
 .WithTags("Products");
 
+// =====================================================
+// CATEGORIES
+// =====================================================
 
 // GET: /api/categories
 app.MapGet("/api/categories", async (BeanDbContext db) =>
@@ -280,7 +310,10 @@ app.MapPost("/api/categories", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["name"] = ["Category name must not exceed 80 characters."]
+                ["name"] =
+                [
+                    "Category name must not exceed 80 characters."
+                ]
             });
     }
 
@@ -289,7 +322,10 @@ app.MapPost("/api/categories", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["description"] = ["Description must not exceed 300 characters."]
+                ["description"] =
+                [
+                    "Description must not exceed 300 characters."
+                ]
             });
     }
 
@@ -353,7 +389,10 @@ app.MapPut("/api/categories/{id:int}", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["name"] = ["Category name must not exceed 80 characters."]
+                ["name"] =
+                [
+                    "Category name must not exceed 80 characters."
+                ]
             });
     }
 
@@ -362,12 +401,16 @@ app.MapPut("/api/categories/{id:int}", async (
         return Results.ValidationProblem(
             new Dictionary<string, string[]>
             {
-                ["description"] = ["Description must not exceed 300 characters."]
+                ["description"] =
+                [
+                    "Description must not exceed 300 characters."
+                ]
             });
     }
 
     var duplicate = await db.Categories.AnyAsync(c =>
-        c.Id != id && c.Name.ToLower() == name.ToLower());
+        c.Id != id &&
+        c.Name.ToLower() == name.ToLower());
 
     if (duplicate)
     {
@@ -408,7 +451,8 @@ app.MapDelete("/api/categories/{id:int}", async (
     {
         return Results.Conflict(new
         {
-            message = "Cannot delete a category that still has products."
+            message =
+                "Cannot delete a category that still has products."
         });
     }
 
@@ -419,7 +463,5 @@ app.MapDelete("/api/categories/{id:int}", async (
 })
 .WithName("DeleteCategory")
 .WithTags("Categories");
-
-
 
 app.Run();
