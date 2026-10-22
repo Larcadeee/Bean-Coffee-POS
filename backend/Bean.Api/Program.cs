@@ -69,6 +69,14 @@ app.MapGet("/api/products", async (BeanDbContext db) =>
     var products = await db.Products
         .AsNoTracking()
         .OrderBy(p => p.Name)
+        .Select(p => new ProductResponse(
+            p.Id,
+            p.Name,
+            p.Price,
+            p.IsAvailable,
+            p.CreatedAt,
+            p.CategoryId,
+            p.Category != null ? p.Category.Name : null))
         .ToListAsync();
 
     return Results.Ok(products);
@@ -83,7 +91,16 @@ app.MapGet("/api/products/{id:int}", async (
 {
     var product = await db.Products
         .AsNoTracking()
-        .FirstOrDefaultAsync(p => p.Id == id);
+        .Where(p => p.Id == id)
+        .Select(p => new ProductResponse(
+            p.Id,
+            p.Name,
+            p.Price,
+            p.IsAvailable,
+            p.CreatedAt,
+            p.CategoryId,
+            p.Category != null ? p.Category.Name : null))
+        .FirstOrDefaultAsync();
 
     return product is null
         ? Results.NotFound()
@@ -156,9 +173,23 @@ app.MapPost("/api/products", async (
     db.Products.Add(product);
     await db.SaveChangesAsync();
 
-    return Results.Created(
-        $"/api/products/{product.Id}",
-        product);
+        var response = new ProductResponse(
+    product.Id,
+    product.Name,
+    product.Price,
+    product.IsAvailable,
+    product.CreatedAt,
+    product.CategoryId,
+    product.CategoryId.HasValue
+        ? await db.Categories
+            .Where(c => c.Id == product.CategoryId.Value)
+            .Select(c => c.Name)
+            .FirstOrDefaultAsync()
+        : null);
+
+return Results.Created(
+    $"/api/products/{product.Id}",
+    response);
 })
 .WithName("CreateProduct")
 .WithTags("Products");
@@ -230,7 +261,21 @@ app.MapPut("/api/products/{id:int}", async (
 
     await db.SaveChangesAsync();
 
-    return Results.Ok(product);
+    var response = new ProductResponse(
+    product.Id,
+    product.Name,
+    product.Price,
+    product.IsAvailable,
+    product.CreatedAt,
+    product.CategoryId,
+    product.CategoryId.HasValue
+        ? await db.Categories
+            .Where(c => c.Id == product.CategoryId.Value)
+            .Select(c => c.Name)
+            .FirstOrDefaultAsync()
+        : null);
+
+return Results.Ok(response);
 })
 .WithName("UpdateProduct")
 .WithTags("Products");
