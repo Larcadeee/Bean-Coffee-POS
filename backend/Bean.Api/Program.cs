@@ -1,20 +1,47 @@
 
+using Bean.Api.Data;
+using Microsoft.EntityFrameworkCore;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Register API documentation services.
+// API documentation.
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+// PostgreSQL connection.
+var connectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection");
+
+if (string.IsNullOrWhiteSpace(connectionString))
+{
+    throw new InvalidOperationException(
+        "The DefaultConnection connection string is missing.");
+}
+
+builder.Services.AddDbContext<BeanDbContext>(options =>
+    options.UseNpgsql(connectionString));
+
 var app = builder.Build();
 
-// Enable Swagger in the local development environment.
 if (app.Environment.IsDevelopment())
 {
     app.UseSwagger();
     app.UseSwaggerUI();
 }
 
-// Basic endpoint to verify that the API is running.
+// Root endpoint.
+app.MapGet("/", () =>
+{
+    return Results.Ok(new
+    {
+        message = "Welcome to Bean Coffee POS API",
+        documentation = "/swagger",
+        health = "/api/health",
+        databaseHealth = "/api/health/database"
+    });
+});
+
+// API health check.
 app.MapGet("/api/health", () =>
 {
     return Results.Ok(new
@@ -27,15 +54,38 @@ app.MapGet("/api/health", () =>
 .WithName("GetHealth")
 .WithTags("System");
 
-// Root endpoint.
-app.MapGet("/", () =>
-{
-    return Results.Ok(new
+// Database connectivity check.
+app.MapGet(
+    "/api/health/database",
+    async (BeanDbContext db) =>
     {
-        message = "Welcome to Bean Coffee POS API",
-        documentation = "/swagger",
-        health = "/api/health"
-    });
-});
+        try
+        {
+            var canConnect =
+                await db.Database.CanConnectAsync();
+
+            if (!canConnect)
+            {
+                return Results.Problem(
+                    title: "Database unavailable",
+                    statusCode: StatusCodes.Status503ServiceUnavailable);
+            }
+
+            return Results.Ok(new
+            {
+                status = "Healthy",
+                database = "bean_pos"
+            });
+        }
+        catch
+        {
+            // Avoid returning connection details or credentials.
+            return Results.Problem(
+                title: "Database connection failed",
+                statusCode: StatusCodes.Status503ServiceUnavailable);
+        }
+    })
+    .WithName("GetDatabaseHealth")
+    .WithTags("System");
 
 app.Run();
