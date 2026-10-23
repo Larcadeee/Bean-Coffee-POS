@@ -5,3 +5,18 @@
 # Local development secrets
 **/appsettings.Development.json
 **/secrets.json
+
+# Node.js / React
+node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.*
+!frontend/.env.example
+
+# .NET build output
+**/bin/
+**/obj/
+
+# Local configuration and secrets
+**/appsettings.Development.json
+**/secrets.json

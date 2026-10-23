@@ -16,8 +16,12 @@ public class BeanDbContext : DbContext
 
     public DbSet<Category> Categories => Set<Category>();
 
-    public DbSet<StockAdjustment> StockAdjustments =>
-        Set<StockAdjustment>();
+    public DbSet<StockAdjustment> StockAdjustments
+        => Set<StockAdjustment>();
+
+    public DbSet<Sale> Sales => Set<Sale>();
+
+    public DbSet<SaleItem> SaleItems => Set<SaleItem>();
 
     protected override void OnModelCreating(
         ModelBuilder modelBuilder)
@@ -27,7 +31,6 @@ public class BeanDbContext : DbContext
         modelBuilder.Entity<Product>(entity =>
         {
             entity.ToTable("Products");
-
             entity.HasKey(product => product.Id);
 
             entity.Property(product => product.Name)
@@ -58,7 +61,6 @@ public class BeanDbContext : DbContext
         modelBuilder.Entity<Category>(entity =>
         {
             entity.ToTable("Categories");
-
             entity.HasKey(category => category.Id);
 
             entity.Property(category => category.Name)
@@ -79,7 +81,6 @@ public class BeanDbContext : DbContext
         modelBuilder.Entity<StockAdjustment>(entity =>
         {
             entity.ToTable("StockAdjustments");
-
             entity.HasKey(adjustment => adjustment.Id);
 
             entity.Property(adjustment => adjustment.QuantityChange)
@@ -111,6 +112,61 @@ public class BeanDbContext : DbContext
                 })
                 .HasDatabaseName(
                     "IX_StockAdjustments_ProductId_CreatedAt");
+        });
+
+        modelBuilder.Entity<Sale>(entity =>
+        {
+            entity.ToTable("Sales");
+            entity.HasKey(sale => sale.Id);
+
+            entity.Property(sale => sale.TotalAmount)
+                .HasPrecision(10, 2)
+                .IsRequired();
+
+            entity.Property(sale => sale.CashReceived)
+                .HasPrecision(10, 2)
+                .IsRequired();
+
+            entity.Property(sale => sale.ChangeDue)
+                .HasPrecision(10, 2)
+                .IsRequired();
+
+            entity.Property(sale => sale.CreatedAt)
+                .HasColumnType("timestamp with time zone")
+                .IsRequired();
+
+            entity.HasMany(sale => sale.Items)
+                .WithOne(item => item.Sale)
+                .HasForeignKey(item => item.SaleId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(sale => sale.CreatedAt)
+                .HasDatabaseName("IX_Sales_CreatedAt");
+        });
+
+        modelBuilder.Entity<SaleItem>(entity =>
+        {
+            entity.ToTable("SaleItems");
+            entity.HasKey(item => item.Id);
+
+            entity.Property(item => item.Quantity)
+                .IsRequired();
+
+            entity.Property(item => item.UnitPrice)
+                .HasPrecision(10, 2)
+                .IsRequired();
+
+            entity.Property(item => item.LineTotal)
+                .HasPrecision(10, 2)
+                .IsRequired();
+
+            entity.HasOne(item => item.Product)
+                .WithMany()
+                .HasForeignKey(item => item.ProductId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(item => item.SaleId)
+                .HasDatabaseName("IX_SaleItems_SaleId");
         });
     }
 }

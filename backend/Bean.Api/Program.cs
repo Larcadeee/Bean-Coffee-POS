@@ -15,7 +15,19 @@ builder.Services.AddDbContext<BeanDbContext>(options =>
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 
+builder.Services.AddCors(options =>
+{
+    options.AddPolicy("Frontend", policy =>
+    {
+        policy
+            .WithOrigins("http://localhost:5173")
+            .AllowAnyHeader()
+            .AllowAnyMethod();
+    });
+});
+
 var app = builder.Build();
+app.UseCors("Frontend");
 
 // Swagger
 if (app.Environment.IsDevelopment())
@@ -495,6 +507,361 @@ app.MapDelete("/api/products/{id:int}", async (
  })
  .WithName("CreateProductStockAdjustment")
  .WithTags("Inventory");
+
+
+app.MapPost("/api/sales", async (
+    CreateSaleRequest request,
+    BeanDbContext db) =>
+{
+    const decimal MaxAmount = 99999999.99m;
+
+    if (request.Items is null || request.Items.Count == 0)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["items"] = ["A sale must contain at least one item."]
+            });
+    }
+
+    if (request.Items.Count > 100)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["items"] = ["A sale cannot contain more than 100 items."]
+            });
+    }
+
+    if (request.CashReceived < 0 ||
+        request.CashReceived > MaxAmount ||
+        decimal.Round(request.CashReceived, 2) != request.CashReceived)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["cashReceived"] =
+                [
+                    "Cash received must be a nonnegative amount with at most two decimal places."
+                ]
+            });
+    }
+
+    if (request.Items.Any(item =>
+        item.ProductId <= 0 || item.Quantity <= 0))
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["items"] =
+                [
+                    "Every item must have a valid product ID and a quantity greater than zero."
+                ]
+            });
+    }
+
+    if (request.Items
+        .GroupBy(item => item.ProductId)
+        .Any(group => group.Count() > 1))
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["items"] =
+                [
+                    "Each product must appear only once. Combine quantities for duplicate products."
+                ]
+            });
+    }
+
+    await using var transaction =
+        await db.Database.BeginTransactionAsync();
+
+    var lockedProducts = new Dictionary<int, Product>();
+
+    // Lock products in ascending ID order to reduce deadlock risk.
+    foreach (var productId in request.Items
+        .Select(item => item.ProductId)
+        .OrderBy(id => id))
+    {
+        var product = await db.Products
+            .FromSqlInterpolated(
+                $"SELECT * FROM \"Products\" WHERE \"Id\" = {productId} FOR UPDATE")
+            .FirstOrDefaultAsync();
+
+        if (product is null)
+        {
+            await transaction.RollbackAsync();
+
+            return Results.NotFound(new
+            {
+                message = $"Product {productId} was not found."
+            });
+        }
+
+        lockedProducts.Add(productId, product);
+    }
+
+    foreach (var item in request.Items)
+    {
+        var product = lockedProducts[item.ProductId];
+
+        if (!product.IsAvailable)
+        {
+            await transaction.RollbackAsync();
+
+            return Results.ValidationProblem(
+                new Dictionary<string, string[]>
+                {
+                    ["items"] =
+                    [
+                        $"{product.Name} is currently unavailable."
+                    ]
+                });
+        }
+
+        if (product.StockQuantity < item.Quantity)
+        {
+            await transaction.RollbackAsync();
+
+            return Results.ValidationProblem(
+                new Dictionary<string, string[]>
+                {
+                    ["items"] =
+                    [
+                        $"Insufficient stock for {product.Name}. Available: {product.StockQuantity}; requested: {item.Quantity}."
+                    ]
+                });
+        }
+    }
+
+    var saleItems = new List<SaleItem>();
+    decimal totalAmount = 0;
+
+    foreach (var item in request.Items)
+    {
+        var product = lockedProducts[item.ProductId];
+
+        var lineTotal = decimal.Round(
+            product.Price * item.Quantity,
+            2,
+            MidpointRounding.AwayFromZero);
+
+        if (lineTotal > MaxAmount ||
+            totalAmount > MaxAmount - lineTotal)
+        {
+            await transaction.RollbackAsync();
+
+            return Results.ValidationProblem(
+                new Dictionary<string, string[]>
+                {
+                    ["items"] =
+                    [
+                        "The sale total exceeds the supported amount."
+                    ]
+                });
+        }
+
+        totalAmount += lineTotal;
+
+        saleItems.Add(new SaleItem
+        {
+            ProductId = product.Id,
+            Quantity = item.Quantity,
+            UnitPrice = product.Price,
+            LineTotal = lineTotal
+        });
+    }
+
+    if (request.CashReceived < totalAmount)
+    {
+        await transaction.RollbackAsync();
+
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["cashReceived"] =
+                [
+                    $"Insufficient payment. The total is {totalAmount:0.00}."
+                ]
+            });
+    }
+
+    var sale = new Sale
+    {
+        TotalAmount = totalAmount,
+        CashReceived = request.CashReceived,
+        ChangeDue = request.CashReceived - totalAmount,
+        CreatedAt = DateTimeOffset.UtcNow,
+        Items = saleItems
+    };
+
+    db.Sales.Add(sale);
+
+    // Save the sale and its items inside the transaction.
+    await db.SaveChangesAsync();
+
+    foreach (var item in sale.Items)
+    {
+        var product = lockedProducts[item.ProductId];
+        var stockBefore = product.StockQuantity;
+
+        product.StockQuantity -= item.Quantity;
+
+        db.StockAdjustments.Add(new StockAdjustment
+        {
+            ProductId = product.Id,
+            QuantityChange = -item.Quantity,
+            StockBefore = stockBefore,
+            StockAfter = product.StockQuantity,
+            Reason = $"Sale #{sale.Id}",
+            CreatedAt = DateTimeOffset.UtcNow
+        });
+    }
+
+    // Persist inventory changes and adjustment history.
+    await db.SaveChangesAsync();
+
+    var response = new SaleResponse(
+        sale.Id,
+        sale.TotalAmount,
+        sale.CashReceived,
+        sale.ChangeDue,
+        sale.CreatedAt,
+        sale.Items.Select(item => new SaleItemResponse(
+            item.Id,
+            item.ProductId,
+            lockedProducts[item.ProductId].Name,
+            item.Quantity,
+            item.UnitPrice,
+            item.LineTotal
+        )).ToList());
+
+    await transaction.CommitAsync();
+
+    return Results.Created(
+        $"/api/sales/{sale.Id}",
+        response);
+})
+.WithName("CreateSale")
+.WithTags("Sales");
+
+
+// SALES HISTORY
+
+// GET /api/sales?page=1&pageSize=20
+app.MapGet("/api/sales", async (
+    int page,
+    int pageSize,
+    BeanDbContext db) =>
+{
+    if (page < 1)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["page"] = ["Page must be greater than zero."]
+            });
+    }
+
+    if (pageSize < 1 || pageSize > 100)
+    {
+        return Results.ValidationProblem(
+            new Dictionary<string, string[]>
+            {
+                ["pageSize"] =
+                [
+                    "Page size must be between 1 and 100."
+                ]
+            });
+    }
+
+    var query = db.Sales
+        .AsNoTracking();
+
+    var totalCount = await query.CountAsync();
+
+    var sales = await query
+        .Include(sale => sale.Items)
+            .ThenInclude(item => item.Product)
+        .OrderByDescending(sale => sale.CreatedAt)
+        .ThenByDescending(sale => sale.Id)
+        .Skip((page - 1) * pageSize)
+        .Take(pageSize)
+        .ToListAsync();
+
+    var items = sales.Select(sale =>
+        new SaleResponse(
+            sale.Id,
+            sale.TotalAmount,
+            sale.CashReceived,
+            sale.ChangeDue,
+            sale.CreatedAt,
+            sale.Items.Select(item =>
+                new SaleItemResponse(
+                    item.Id,
+                    item.ProductId,
+                    item.Product.Name,
+                    item.Quantity,
+                    item.UnitPrice,
+                    item.LineTotal
+                )).ToList()
+        )).ToList();
+
+    return Results.Ok(new
+    {
+        page,
+        pageSize,
+        totalCount,
+        totalPages = (int)Math.Ceiling(
+            totalCount / (double)pageSize),
+        items
+    });
+})
+.WithName("GetSales")
+.WithTags("Sales");
+
+
+// GET /api/sales/{id}
+app.MapGet("/api/sales/{id:int}", async (
+    int id,
+    BeanDbContext db) =>
+{
+    var sale = await db.Sales
+        .AsNoTracking()
+        .Include(sale => sale.Items)
+            .ThenInclude(item => item.Product)
+        .FirstOrDefaultAsync(sale => sale.Id == id);
+
+    if (sale is null)
+    {
+        return Results.NotFound(new
+        {
+            message = $"Sale {id} was not found."
+        });
+    }
+
+    var response = new SaleResponse(
+        sale.Id,
+        sale.TotalAmount,
+        sale.CashReceived,
+        sale.ChangeDue,
+        sale.CreatedAt,
+        sale.Items.Select(item =>
+            new SaleItemResponse(
+                item.Id,
+                item.ProductId,
+                item.Product.Name,
+                item.Quantity,
+                item.UnitPrice,
+                item.LineTotal
+            )).ToList()
+    );
+
+    return Results.Ok(response);
+})
+.WithName("GetSaleById")
+.WithTags("Sales");
 
 
 // ==============================
