@@ -10,6 +10,10 @@ import {
   RefreshCw,
   AlertCircle,
   Package,
+  X,
+  Banknote,
+  CheckCircle,
+  Receipt,
 } from "lucide-react";
 import "./App.css";
 
@@ -24,39 +28,14 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const [paymentOpen, setPaymentOpen] = useState(false);
+  const [cashReceived, setCashReceived] = useState("");
+  const [checkoutError, setCheckoutError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [receipt, setReceipt] = useState(null);
+
   async function loadCatalog() {
     setLoading(true);
-    setError("");
-
-    try {
-      const [productsResponse, categoriesResponse] = await Promise.all([
-        fetch(`${API_BASE_URL}/products`),
-        fetch(`${API_BASE_URL}/categories`),
-      ]);
-
-      if (!productsResponse.ok || !categoriesResponse.ok) {
-        throw new Error("The API returned an unsuccessful response.");
-      }
-
-      const productsData = await productsResponse.json();
-      const categoriesData = await categoriesResponse.json();
-
-      setProducts(productsData);
-      setCategories(categoriesData);
-    } catch (err) {
-      console.error("Catalog loading failed:", err);
-      setError(
-        "Unable to load products. Make sure your ASP.NET Core API is running."
-      );
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  useEffect(() => {
-  let cancelled = false;
-
-  async function fetchCatalog() {
     setError("");
 
     try {
@@ -74,31 +53,64 @@ function App() {
         categoriesResponse.json(),
       ]);
 
-      if (!cancelled) {
-        setProducts(productsData);
-        setCategories(categoriesData);
-      }
+      setProducts(productsData);
+      setCategories(categoriesData);
     } catch (err) {
       console.error("Catalog loading failed:", err);
-
-      if (!cancelled) {
-        setError(
-          "Unable to load products. Make sure your ASP.NET Core API is running."
-        );
-      }
+      setError(
+        "Unable to load products. Make sure your ASP.NET Core API is running."
+      );
     } finally {
-      if (!cancelled) {
-        setLoading(false);
-      }
+      setLoading(false);
     }
   }
 
-  fetchCatalog();
+  useEffect(() => {
+    let cancelled = false;
 
-  return () => {
-    cancelled = true;
-  };
-}, []);
+    async function fetchCatalog() {
+      setError("");
+
+      try {
+        const [productsResponse, categoriesResponse] = await Promise.all([
+          fetch(`${API_BASE_URL}/products`),
+          fetch(`${API_BASE_URL}/categories`),
+        ]);
+
+        if (!productsResponse.ok || !categoriesResponse.ok) {
+          throw new Error("The API returned an unsuccessful response.");
+        }
+
+        const [productsData, categoriesData] = await Promise.all([
+          productsResponse.json(),
+          categoriesResponse.json(),
+        ]);
+
+        if (!cancelled) {
+          setProducts(productsData);
+          setCategories(categoriesData);
+        }
+      } catch (err) {
+        console.error("Catalog loading failed:", err);
+
+        if (!cancelled) {
+          setError(
+            "Unable to load products. Make sure your ASP.NET Core API is running."
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    }
+
+    fetchCatalog();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const filteredProducts = useMemo(() => {
     return products.filter((product) => {
@@ -121,13 +133,28 @@ function App() {
     0
   );
 
+  const cashAmount = cashReceived.trim() === "" ? 0 : Number(cashReceived);
+  const validCashInput =
+    cashReceived.trim() !== "" &&
+    Number.isFinite(cashAmount) &&
+    cashAmount >= 0;
+
+  const changeDue = validCashInput
+    ? Math.max(0, cashAmount - subtotal)
+    : 0;
+
+  function formatPrice(amount) {
+    return new Intl.NumberFormat("en-PH", {
+      style: "currency",
+      currency: "PHP",
+    }).format(Number(amount) || 0);
+  }
+
   function addToCart(product) {
     if (!product.isAvailable || product.stockQuantity <= 0) return;
 
     setCart((currentCart) => {
-      const existing = currentCart.find(
-        (item) => item.id === product.id
-      );
+      const existing = currentCart.find((item) => item.id === product.id);
 
       if (existing) {
         if (existing.quantity >= product.stockQuantity) {
@@ -156,18 +183,16 @@ function App() {
 
   function updateQuantity(productId, change) {
     setCart((currentCart) =>
-      currentCart
-        .map((item) => {
-          if (item.id !== productId) return item;
+      currentCart.map((item) => {
+        if (item.id !== productId) return item;
 
-          const nextQuantity = item.quantity + change;
+        const nextQuantity = item.quantity + change;
 
-          if (nextQuantity < 1) return item;
-          if (nextQuantity > item.stockQuantity) return item;
+        if (nextQuantity < 1) return item;
+        if (nextQuantity > item.stockQuantity) return item;
 
-          return { ...item, quantity: nextQuantity };
-        })
-        .filter((item) => item.quantity > 0)
+        return { ...item, quantity: nextQuantity };
+      })
     );
   }
 
@@ -177,11 +202,91 @@ function App() {
     );
   }
 
-  function formatPrice(amount) {
-    return new Intl.NumberFormat("en-PH", {
-      style: "currency",
-      currency: "PHP",
-    }).format(amount);
+  function openPayment() {
+    setCashReceived("");
+    setCheckoutError("");
+    setPaymentOpen(true);
+  }
+
+  async function handleCheckout(event) {
+    event.preventDefault();
+
+    if (submitting) return;
+
+    if (cart.length === 0) {
+      setCheckoutError("Your cart is empty.");
+      return;
+    }
+
+    if (!validCashInput) {
+      setCheckoutError("Enter a valid cash amount.");
+      return;
+    }
+
+    if (cashAmount < subtotal) {
+      setCheckoutError("Cash received must cover the total amount.");
+      return;
+    }
+
+    setSubmitting(true);
+    setCheckoutError("");
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/sales`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          cashReceived: cashAmount,
+          items: cart.map((item) => ({
+            productId: item.id,
+            quantity: item.quantity,
+          })),
+        }),
+      });
+
+      const data = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        const message =
+          data?.detail ||
+          data?.message ||
+          data?.title ||
+          (typeof data === "string" ? data : null) ||
+          `Checkout failed (HTTP ${response.status}).`;
+
+        throw new Error(message);
+      }
+
+      setReceipt(data);
+      setCart([]);
+      setPaymentOpen(false);
+      setCashReceived("");
+
+      // Refresh stock and product information after a successful sale.
+      await loadCatalog();
+    } catch (err) {
+      console.error("Checkout failed:", err);
+      setCheckoutError(
+        err instanceof TypeError
+          ? "Could not connect to the sales API. Check that the backend is running."
+          : err.message || "Unable to complete the sale. Please try again."
+      );
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function closePayment() {
+    if (submitting) return;
+
+    setPaymentOpen(false);
+    setCheckoutError("");
+  }
+
+  function closeReceipt() {
+    setReceipt(null);
   }
 
   return (
@@ -219,6 +324,7 @@ function App() {
               onClick={loadCatalog}
               title="Refresh catalog"
               aria-label="Refresh catalog"
+              disabled={loading}
             >
               <RefreshCw size={18} />
             </button>
@@ -289,7 +395,9 @@ function App() {
                       </p>
 
                       <div className="product-card-footer">
-                        <strong>{formatPrice(Number(product.price))}</strong>
+                        <strong>
+                          {formatPrice(Number(product.price))}
+                        </strong>
                         <button
                           className="add-button"
                           onClick={() => addToCart(product)}
@@ -358,13 +466,16 @@ function App() {
                     <button
                       onClick={() => updateQuantity(item.id, -1)}
                       aria-label={`Decrease ${item.name} quantity`}
+                      disabled={submitting}
                     >
                       <Minus size={15} />
                     </button>
                     <span>{item.quantity}</span>
                     <button
                       onClick={() => updateQuantity(item.id, 1)}
-                      disabled={item.quantity >= item.stockQuantity}
+                      disabled={
+                        submitting || item.quantity >= item.stockQuantity
+                      }
                       aria-label={`Increase ${item.name} quantity`}
                     >
                       <Plus size={15} />
@@ -373,6 +484,7 @@ function App() {
                       className="remove-button"
                       onClick={() => removeFromCart(item.id)}
                       aria-label={`Remove ${item.name}`}
+                      disabled={submitting}
                     >
                       <Trash2 size={16} />
                     </button>
@@ -396,12 +508,8 @@ function App() {
             </p>
             <button
               className="checkout-button"
-              disabled={cart.length === 0}
-              onClick={() =>
-                window.alert(
-                  "Checkout will be implemented in the next step."
-                )
-              }
+              disabled={cart.length === 0 || submitting}
+              onClick={openPayment}
             >
               Continue to payment
             </button>
@@ -413,6 +521,185 @@ function App() {
         <span>BEAN COFFEE POS</span>
         <span>Simple service. Great coffee.</span>
       </footer>
+
+      {paymentOpen && (
+        <div
+          className="modal-backdrop"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closePayment();
+          }}
+        >
+          <section
+            className="checkout-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-title"
+          >
+            <div className="modal-heading">
+              <div className="modal-title-icon">
+                <Banknote size={22} />
+              </div>
+              <button
+                type="button"
+                className="modal-close"
+                onClick={closePayment}
+                disabled={submitting}
+                aria-label="Close payment"
+              >
+                <X size={20} />
+              </button>
+            </div>
+
+            <p className="eyebrow">PAYMENT</p>
+            <h2 id="payment-title">Complete your order</h2>
+            <p className="modal-description">
+              Confirm the total and enter the cash received from the customer.
+            </p>
+
+            <form onSubmit={handleCheckout}>
+              <div className="payment-total">
+                <span>Total amount</span>
+                <strong>{formatPrice(subtotal)}</strong>
+              </div>
+
+              <label className="payment-field">
+                <span>Cash received (PHP)</span>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  inputMode="decimal"
+                  placeholder="Enter amount"
+                  value={cashReceived}
+                  onChange={(event) => {
+                    setCashReceived(event.target.value);
+                    setCheckoutError("");
+                  }}
+                  disabled={submitting}
+                  autoFocus
+                  required
+                />
+              </label>
+
+              <div className="payment-change">
+                <span>Change due</span>
+                <strong>{formatPrice(changeDue)}</strong>
+              </div>
+
+              {validCashInput && cashAmount < subtotal && (
+                <p className="payment-hint">
+                  Short by {formatPrice(subtotal - cashAmount)}.
+                </p>
+              )}
+
+              {checkoutError && (
+                <div className="error-message checkout-error" role="alert">
+                  <AlertCircle size={18} />
+                  <span>{checkoutError}</span>
+                </div>
+              )}
+
+              <div className="modal-actions">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={closePayment}
+                  disabled={submitting}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  className="checkout-button"
+                  disabled={
+                    submitting ||
+                    cart.length === 0 ||
+                    !validCashInput ||
+                    cashAmount < subtotal
+                  }
+                >
+                  {submitting ? (
+                    <>
+                      <RefreshCw size={17} className="loading-icon" />
+                      Processing...
+                    </>
+                  ) : (
+                    "Confirm payment"
+                  )}
+                </button>
+              </div>
+            </form>
+          </section>
+        </div>
+      )}
+
+      {receipt && (
+        <div className="modal-backdrop">
+          <section
+            className="checkout-modal receipt-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="receipt-title"
+          >
+            <div className="receipt-success-icon">
+              <CheckCircle size={32} />
+            </div>
+            <p className="eyebrow">PAYMENT SUCCESSFUL</p>
+            <h2 id="receipt-title">Thank you!</h2>
+            <p className="modal-description">
+              The sale has been saved and inventory has been updated.
+            </p>
+
+            <div className="receipt-number">
+              <Receipt size={18} />
+              <span>Receipt #{receipt.id}</span>
+            </div>
+
+            <div className="receipt-items">
+              {(receipt.items || []).map((item) => (
+                <div className="receipt-item" key={item.id}>
+                  <div>
+                    <strong>{item.productName}</strong>
+                    <span>
+                      {item.quantity} × {formatPrice(item.unitPrice)}
+                    </span>
+                  </div>
+                  <b>{formatPrice(item.lineTotal)}</b>
+                </div>
+              ))}
+            </div>
+
+            <div className="receipt-totals">
+              <div>
+                <span>Total</span>
+                <strong>{formatPrice(receipt.totalAmount)}</strong>
+              </div>
+              <div>
+                <span>Cash received</span>
+                <strong>{formatPrice(receipt.cashReceived)}</strong>
+              </div>
+              <div className="receipt-change">
+                <span>Change due</span>
+                <strong>{formatPrice(receipt.changeDue)}</strong>
+              </div>
+            </div>
+
+            <p className="receipt-date">
+              {receipt.createdAt
+                ? new Date(receipt.createdAt).toLocaleString("en-PH")
+                : ""}
+            </p>
+
+            <button
+              type="button"
+              className="checkout-button receipt-done"
+              onClick={closeReceipt}
+            >
+              Done
+            </button>
+          </section>
+        </div>
+      )}
     </div>
   );
 }
